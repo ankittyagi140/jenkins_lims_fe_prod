@@ -39,16 +39,17 @@ pipeline {
                 script {
                     echo "🔍 Validating production environment configuration..."
                     
-                    // Check if .env.prod exists
+                    // Check if .env.prod exists (now allowed in repo)
                     sh """
                         if [ ! -f .env.prod ]; then
                             echo "❌ ERROR: .env.prod file not found!"
+                            echo "   Make sure .env.prod is committed to the repository"
                             exit 1
                         fi
                         
                         echo "✅ .env.prod file found"
                         
-                        # Validate required environment variables
+                        # Validate required environment variables in .env.prod
                         if ! grep -q "REACT_APP_API_URL" .env.prod; then
                             echo "❌ ERROR: REACT_APP_API_URL not found in .env.prod"
                             exit 1
@@ -64,7 +65,7 @@ pipeline {
                             exit 1
                         fi
                         
-                        echo "✅ All required environment variables found"
+                        echo "✅ All required environment variables found in .env.prod"
                     """
                 }
             }
@@ -74,6 +75,7 @@ pipeline {
             steps {
                 script {
                     echo "🔨 Building production Docker image..."
+                    
                     sh """
                         set -e
                         
@@ -95,12 +97,15 @@ pipeline {
                             --exclude='dist-prod' \
                             --exclude='*.log' \
                             --exclude='.env' \
-                            --exclude='.env.*' \
+                            --exclude='.env.development' \
+                            --exclude='.env.stage' \
+                            --exclude='.env.*.local' \
                             -czf - . | tar -xzf - -C "${DEPLOY_PATH}"
                         
                         cd "${DEPLOY_PATH}"
                         
                         echo "🐳 Building Docker image: ${IMAGE_NAME}"
+                        echo "📝 Using .env.prod file from repository for build"
                         docker build -f "${DOCKERFILE}" -t "${IMAGE_NAME}:latest" .
                         
                         # Tag with build number for versioning
