@@ -25,11 +25,11 @@ pipeline {
         stage('Checkout') {
             steps {
                 script {
-                    echo "📥 Checking out code from repository..."
-                    git branch: 'main',
+                    echo "📥 Checking out code from repository (release branch)..."
+                    git branch: 'release',
                         credentialsId: 'github-pat',
                         url: env.REPO_URL
-                    echo "✅ Code checkout completed"
+                    echo "✅ Code checkout completed from release branch"
                 }
             }
         }
