@@ -102,11 +102,12 @@ pipeline {
                             --exclude='.env.*.local' \
                             -czf - . | tar -xzf - -C "${DEPLOY_PATH}"
                         
-                        cd "${DEPLOY_PATH}"
+                        echo "♻️ Removing old image so the new build starts clean"
+                        docker rmi "${IMAGE_NAME}:latest" || true
                         
-                        echo "🐳 Building Docker image: ${IMAGE_NAME}"
+                        echo "🐳 Building Docker image: ${IMAGE_NAME} (no cache)"
                         echo "📝 Using .env.prod file from repository for build"
-                        docker build -f "${DOCKERFILE}" -t "${IMAGE_NAME}:latest" .
+                        docker build --no-cache -f "${DOCKERFILE}" -t "${IMAGE_NAME}:latest" "${DEPLOY_PATH}"
                         
                         # Tag with build number for versioning
                         docker tag "${IMAGE_NAME}:latest" "${IMAGE_NAME}:${BUILD_NUMBER}"
@@ -124,9 +125,7 @@ pipeline {
                     sh """
                         set -e
                         
-                        cd "${DEPLOY_PATH}"
-                        
-                        echo "🛑 Stopping existing container (if running)"
+                        echo "🛑 Stopping and removing existing container (if running)"
                         docker stop "${CONTAINER}" || true
                         docker rm "${CONTAINER}" || true
                         
@@ -232,4 +231,3 @@ pipeline {
         }
     }
 }
-
