@@ -139,11 +139,12 @@ pipeline {
                         fi
                         
                         echo "🐳 Starting new production container"
+                        # nginx:alpine has wget (busybox), not curl — match stage-style container (no false unhealthy)
                         docker run -d \
                           --name "${CONTAINER}" \
                           -p "${PORT}:80" \
                           --restart unless-stopped \
-                          --health-cmd="curl -f http://localhost/health || exit 1" \
+                          --health-cmd="wget -q -O /dev/null http://127.0.0.1/health || exit 1" \
                           --health-interval=30s \
                           --health-timeout=10s \
                           --health-retries=3 \
@@ -164,7 +165,8 @@ pipeline {
                         # Health check
                         echo "🏥 Performing health check..."
                         sleep 3
-                        HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${PORT}/health || echo "000")
+                        # Jenkins host usually has curl; probe published port on localhost
+                        HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:${PORT}/health || echo "000")
                         
                         if [ "\$HTTP_CODE" = "200" ]; then
                             echo "✅ Health check passed (HTTP 200)"
