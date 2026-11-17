@@ -11,9 +11,18 @@ pipeline {
         IMAGE_NAME  = 'lims-fe-prod'
         CONTAINER   = 'lims-fe-prod'
         PORT        = '3002'
+        // BuildKit: layer + cache-mount reuse (npm, webpack, babel)
+        DOCKER_BUILDKIT = '1'
+    }
+
+    parameters {
+        booleanParam(name: 'CLEAN_BUILD', defaultValue: false,
+            description: 'Ignore all Docker/npm/webpack caches (use only if a build looks stale)')
     }
 
     options {
+        // Per-line timestamps in the console, to see how long each step takes
+        timestamps()
         // Prevent concurrent builds for production
         disableConcurrentBuilds()
         // Add timeout to prevent hanging builds
@@ -102,12 +111,18 @@ pipeline {
                             --exclude='.env.*.local' \
                             -czf - . | tar -xzf - -C "${DEPLOY_PATH}"
                         
-                        echo "♻️ Removing old image so the new build starts clean"
-                        docker rmi "${IMAGE_NAME}:latest" || true
-                        
-                        echo "🐳 Building Docker image: ${IMAGE_NAME} (no cache)"
+                        # Cached build by default; CLEAN_BUILD=true forces a full rebuild.
+                        NO_CACHE=""
+                        if [ "${params.CLEAN_BUILD}" = "true" ]; then
+                          echo "🧽 CLEAN_BUILD requested: building without cache"
+                          NO_CACHE="--no-cache"
+                          # --no-cache skips layers only; also drop the npm/webpack cache mounts
+                          docker builder prune -f --filter type=exec.cachemount || true
+                        fi
+
+                        echo "🐳 Building Docker image: ${IMAGE_NAME}"
                         echo "📝 Using .env.prod file from repository for build"
-                        docker build --no-cache -f "${DOCKERFILE}" -t "${IMAGE_NAME}:latest" "${DEPLOY_PATH}"
+                        docker build \$NO_CACHE -f "${DOCKERFILE}" -t "${IMAGE_NAME}:latest" "${DEPLOY_PATH}"
                         
                         # Tag with build number for versioning
                         docker tag "${IMAGE_NAME}:latest" "${IMAGE_NAME}:${BUILD_NUMBER}"
