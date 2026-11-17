@@ -11,13 +11,7 @@ pipeline {
         IMAGE_NAME  = 'lims-fe-prod'
         CONTAINER   = 'lims-fe-prod'
         PORT        = '3002'
-        // BuildKit: layer + cache-mount reuse (npm, webpack, babel)
-        DOCKER_BUILDKIT = '1'
-    }
-
-    parameters {
-        booleanParam(name: 'CLEAN_BUILD', defaultValue: false,
-            description: 'Ignore all Docker/npm/webpack caches (use only if a build looks stale)')
+        // BuildKit is chosen at build time (only when buildx is installed).
     }
 
     options {
@@ -111,18 +105,22 @@ pipeline {
                             --exclude='.env.*.local' \
                             -czf - . | tar -xzf - -C "${DEPLOY_PATH}"
                         
-                        # Cached build by default; CLEAN_BUILD=true forces a full rebuild.
-                        NO_CACHE=""
-                        if [ "${params.CLEAN_BUILD}" = "true" ]; then
-                          echo "🧽 CLEAN_BUILD requested: building without cache"
-                          NO_CACHE="--no-cache"
-                          # --no-cache skips layers only; also drop the npm/webpack cache mounts
-                          docker builder prune -f --filter type=exec.cachemount || true
+                        # BuildKit (with npm/webpack cache mounts) when buildx is installed;
+                        # otherwise the classic builder with the cache-mount flags stripped.
+                        BUILD_FILE="${DEPLOY_PATH}/${DOCKERFILE}"
+                        if docker buildx version >/dev/null 2>&1; then
+                          export DOCKER_BUILDKIT=1
+                          echo "⚡ BuildKit available: using cache mounts"
+                        else
+                          export DOCKER_BUILDKIT=0
+                          echo "⚠️ buildx not installed: classic builder (layer cache only)"
+                          BUILD_FILE="${DEPLOY_PATH}/${DOCKERFILE}.classic"
+                          sed -E 's/--mount=type=cache,target=[^ ]+ //g' "${DEPLOY_PATH}/${DOCKERFILE}" > "\$BUILD_FILE"
                         fi
 
                         echo "🐳 Building Docker image: ${IMAGE_NAME}"
                         echo "📝 Using .env.prod file from repository for build"
-                        docker build \$NO_CACHE -f "${DOCKERFILE}" -t "${IMAGE_NAME}:latest" "${DEPLOY_PATH}"
+                        docker build -f "\$BUILD_FILE" -t "${IMAGE_NAME}:latest" "${DEPLOY_PATH}"
                         
                         # Tag with build number for versioning
                         docker tag "${IMAGE_NAME}:latest" "${IMAGE_NAME}:${BUILD_NUMBER}"
