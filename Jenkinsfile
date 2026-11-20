@@ -1,17 +1,26 @@
 pipeline {
     agent any
 
+    // Node.js from the Jenkins NodeJS plugin:
+    // Manage Jenkins → Tools → NodeJS installations → Name "node22", version 22.x
+    tools {
+        nodejs 'node22'
+    }
+
     environment {
         ENV_NAME    = 'production'
 
-        DEPLOY_PATH = '/opt/lims/lims-fe-prod'
         REPO_URL    = 'https://github.com/ankittyagi140/euroasia_lims_fe.git'
 
         DOCKERFILE  = 'Dockerfile.prod'
         IMAGE_NAME  = 'lims-fe-prod'
         CONTAINER   = 'lims-fe-prod'
         PORT        = '3002'
-        // BuildKit is chosen at build time (only when buildx is installed).
+
+        // The app is built here in the workspace, which persists between builds:
+        // node_modules and the webpack/babel cache (node_modules/.cache) are reused.
+        WEBPACK_FS_CACHE = '1'
+        HUSKY            = '0'
     }
 
     options {
@@ -20,7 +29,9 @@ pipeline {
         // Prevent concurrent builds for production
         disableConcurrentBuilds()
         // Add timeout to prevent hanging builds
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
+        // The pipeline checks out the app repo itself (release branch) below.
+        skipDefaultCheckout(true)
     }
 
     stages {
@@ -74,57 +85,43 @@ pipeline {
             }
         }
 
+        stage('Install') {
+            steps {
+                sh '''
+                    set -e
+                    node -v && npm -v
+
+                    # Reinstall only when package-lock.json changed (or node_modules is missing).
+                    LOCK_HASH=$(sha256sum package-lock.json | cut -d" " -f1)
+                    if [ -d node_modules ] && [ "$(cat node_modules/.lock-hash 2>/dev/null)" = "$LOCK_HASH" ]; then
+                      echo "✅ Dependencies unchanged: skipping npm ci"
+                    else
+                      echo "📦 package-lock.json changed: running npm ci"
+                      npm ci --no-audit --no-fund
+                      echo "$LOCK_HASH" > node_modules/.lock-hash
+                    fi
+                '''
+            }
+        }
+
         stage('Build') {
             steps {
                 script {
-                    echo "🔨 Building production Docker image..."
-                    
+                    echo "🔨 Building production app and image..."
+
                     sh """
                         set -e
-                        
-                        echo "📁 Preparing deployment directory"
-                        
-                        if [ -z "${DEPLOY_PATH}" ] || [ "${DEPLOY_PATH}" = "/" ]; then
-                          echo "❌ DEPLOY_PATH is unsafe"
-                          exit 1
-                        fi
-                        
-                        mkdir -p "${DEPLOY_PATH}"
-                        rm -rf "${DEPLOY_PATH}"/*
-                        
-                        echo "📦 Copying source code (tar)"
-                        tar --exclude='.git' \
-                            --exclude='node_modules' \
-                            --exclude='dist' \
-                            --exclude='dist-stage' \
-                            --exclude='dist-prod' \
-                            --exclude='*.log' \
-                            --exclude='.env' \
-                            --exclude='.env.development' \
-                            --exclude='.env.stage' \
-                            --exclude='.env.*.local' \
-                            -czf - . | tar -xzf - -C "${DEPLOY_PATH}"
-                        
-                        # BuildKit (with npm/webpack cache mounts) when buildx is installed;
-                        # otherwise the classic builder with the cache-mount flags stripped.
-                        BUILD_FILE="${DEPLOY_PATH}/${DOCKERFILE}"
-                        if docker buildx version >/dev/null 2>&1; then
-                          export DOCKER_BUILDKIT=1
-                          echo "⚡ BuildKit available: using cache mounts"
-                        else
-                          export DOCKER_BUILDKIT=0
-                          echo "⚠️ buildx not installed: classic builder (layer cache only)"
-                          BUILD_FILE="${DEPLOY_PATH}/${DOCKERFILE}.classic"
-                          sed -E 's/--mount=type=cache,target=[^ ]+ //g' "${DEPLOY_PATH}/${DOCKERFILE}" > "\$BUILD_FILE"
-                        fi
 
-                        echo "🐳 Building Docker image: ${IMAGE_NAME}"
-                        echo "📝 Using .env.prod file from repository for build"
-                        docker build -f "\$BUILD_FILE" -t "${IMAGE_NAME}:latest" "${DEPLOY_PATH}"
-                        
+                        echo "🔨 Building app (webpack, cached; reads .env.prod)"
+                        NODE_ENV=production npm run build:prod
+
+                        # Image = nginx + the prebuilt dist/ (a few seconds).
+                        echo "🐳 Building runtime image: ${IMAGE_NAME}"
+                        DOCKER_BUILDKIT=0 docker build -f "${DOCKERFILE}" -t "${IMAGE_NAME}:latest" .
+
                         # Tag with build number for versioning
                         docker tag "${IMAGE_NAME}:latest" "${IMAGE_NAME}:${BUILD_NUMBER}"
-                        
+
                         echo "✅ Docker image built successfully"
                     """
                 }
@@ -207,7 +204,8 @@ pipeline {
                             docker rmi "${IMAGE_NAME}:\$tag" || true
                         done
                         
-                        # Remove dangling images
+                        # Remove dangling images (and the old in-Docker builder image, if any)
+                        docker rmi "${IMAGE_NAME}:builder" 2>/dev/null || true
                         docker image prune -f
                         
                         echo "✅ Cleanup completed"
